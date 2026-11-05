@@ -120,8 +120,11 @@ class Programmer(object):
             print("error: Length less than 2")
             return
         b += self.ser.read(b[1]+1+1)
+        if len(b) < 3:
+            print("error: Incomplete response:", b.hex())
+            return
         # TODO: ADD CRC CHECK
-        print("Response: ", StatusList[b[2]])
+        print("Response: ", StatusList.get(b[2], "Unknown status 0x%02X (raw: %s)" % (b[2], b.hex())))
 
         return b[2]
     
