@@ -15,6 +15,13 @@ import binascii
 # Number of blocks in PD78F0513
 nBlocks = 32
 
+# Flash mode entry timing (seconds)
+RESET_HOLD_TIME = 0.5            # RESET + FLMD0 low before releasing RESET
+T_RFCF = 0.002                   # RESET high -> first FLMD0 pulse (1..10 ms)
+FLMD0_PULSES = 3                 # 3 pulses = UART (TxD/RxD) communication mode
+FLMD0_PULSE_WIDTH = 0.000150     # pulse high/low width (10..500 us)
+FLASH_MODE_SETTLE_TIME = 0.4     # FLMD0 high -> first 00h sync byte
+
 StatusList = {
     0x00: "No data",
     0x04: "Command number error",
@@ -47,32 +54,61 @@ class Programmer(object):
 
     def SerialInit(self, serial_port):
         print("Requesting serial port and resetting chip...")
-        self.ser = serial.Serial(
-            port=serial_port,
-            baudrate=9600,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            bytesize=serial.EIGHTBITS,
-            timeout=1)
+        # Configure the port before opening it, so DTR/RTS already have the
+        # desired level when the port is opened (no glitch on RESET/FLMD0).
+        # rtscts/dsrdtr must be off to keep manual control over the lines.
+        self.ser = serial.Serial()
+        self.ser.port = serial_port
+        self.ser.baudrate = 9600
+        self.ser.parity = serial.PARITY_NONE
+        self.ser.stopbits = serial.STOPBITS_ONE
+        self.ser.bytesize = serial.EIGHTBITS
+        self.ser.timeout = 1
+        self.ser.rtscts = False
+        self.ser.dsrdtr = False
+        self.ser.dtr = True  # RESET low
+        self.ser.rts = True  # FLMD0 low
+        self.ser.open()
 
-        self.ser.isOpen()
-
-        # Reset microcontroller with RTS line
-        self.ser.setRTS(True)
-        time.sleep(11/1000)
-        self.ser.setRTS(False)
-        time.sleep(11/1000)
-        self.ser.setRTS(True)
-
-        time.sleep(400/1000)
+        self.EnterFlashMode()
 
         self.ser.write(bytearray([0x00]))
         time.sleep(11/1000)
         self.ser.write(bytearray([0x00]))
         time.sleep(11/1000)
 
-        return       
-    
+        return
+
+    def EnterFlashMode(self):
+        # Line mapping (inverted by the RS232/USB-UART adapter):
+        #   dtr = True  -> RESET = 0V  (reset active)
+        #   dtr = False -> RESET = VDD (reset released)
+        #   rts = True  -> FLMD0 = 0V
+        #   rts = False -> FLMD0 = VDD
+        print("Entering flash programming mode (FLMD0 pulses)...")
+
+        # Step 1: initial state, RESET and FLMD0 low
+        self.ser.dtr = True
+        self.ser.rts = True
+        time.sleep(RESET_HOLD_TIME)
+
+        # Step 2: release RESET, chip starts
+        self.ser.dtr = False
+
+        # Step 3: wait tRFCF (1..10 ms), then send FLMD0 pulses
+        time.sleep(T_RFCF)
+        for _ in range(FLMD0_PULSES):
+            self.ser.rts = False  # FLMD0 high
+            time.sleep(FLMD0_PULSE_WIDTH)
+            self.ser.rts = True   # FLMD0 low
+            time.sleep(FLMD0_PULSE_WIDTH)
+
+        # Step 4: keep FLMD0 high for the rest of the session
+        self.ser.rts = False
+
+        time.sleep(FLASH_MODE_SETTLE_TIME)
+        return
+
     def Receive(self):
         b = bytearray()
 
