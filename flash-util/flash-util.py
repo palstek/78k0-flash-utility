@@ -41,6 +41,10 @@ StatusList = {
 }
 
 
+def StatusText(status):
+    return StatusList.get(status, "Unknown status 0x%02X" % status)
+
+
 def add_crc(b, size):
         crc = 0x00 # initial value
 
@@ -113,22 +117,37 @@ class Programmer(object):
         time.sleep(FLASH_MODE_SETTLE_TIME)
         return
 
-    def Receive(self):
-        b = bytearray()
-
+    def ReceiveFrame(self):
+        # Status frame (sent by the chip as a data frame):
+        #   STX, LEN, DATA[LEN], SUM, ETX
+        #   SUM = 00h - LEN - DATA[0] - ... (mod 256)
+        # Returns the data bytes, or None on timeout / malformed frame.
         b = self.ser.read(2) # read 2 bytes to determine length
 
         if len(b) < 2:
             print("error: Length less than 2")
-            return
-        b += self.ser.read(b[1]+1+1)
-        if len(b) < 3:
+            return None
+        length = b[1] if b[1] != 0 else 256
+        b += self.ser.read(length + 2)
+        if len(b) < length + 4:
             print("error: Incomplete response:", b.hex())
-            return
-        # TODO: ADD CRC CHECK
-        print("Response: ", StatusList.get(b[2], "Unknown status 0x%02X (raw: %s)" % (b[2], b.hex())))
+            return None
+        if b[0] != 0x02 or b[-1] != 0x03:
+            print("error: Invalid frame (STX/ETX):", b.hex())
+            return None
+        if add_crc(b, length) != b[-2]:
+            print("error: Checksum error in response:", b.hex())
+            return None
 
-        return b[2]
+        return bytes(b[2:2 + length])
+
+    def Receive(self):
+        # Receive a status frame and return its first status byte (ST1).
+        data = self.ReceiveFrame()
+        if data is None:
+            return None
+        print("Response: ", StatusText(data[0]))
+        return data[0]
 
     def ExitFlashMode(self):
         # Leave flash programming mode: FLMD0 low, then pulse RESET so the
