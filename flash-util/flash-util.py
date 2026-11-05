@@ -394,14 +394,15 @@ def usage():
 def main():
     global nBlocks
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hp:fecb:vi:n:", ["help", "port=", "flash", "erase", "checkempty", "block=", "verify", "input=", "blocks="])
+        opts, args = getopt.getopt(sys.argv[1:], "hp:f:ecb:v:n:", ["help", "port=", "flash=", "erase", "checkempty", "block=", "verify=", "blocks="])
     except getopt.GetoptError as err:
         # print help information and exit:
         print(err)  # will print something like "option -a not recognized"
         usage()
         sys.exit(2)
     port = "COM1"
-    file = None
+    flashFile = None
+    verifyFile = None
     block = 0
     blockSpecified = False
 
@@ -412,18 +413,13 @@ def main():
     for o, a in opts:
         if o in ("-v", "--verify"):
             verify = True
+            verifyFile = a
         elif o in ("-h", "--help"):
             usage()
             sys.exit()
         elif o in ("-p", "--port"):
             port = a
             print("setting port to: ", port)
-        elif o in ("-i", "--input"):
-            file = a
-            if not path.exists(file):
-                print("missing input file.\n")
-                usage()
-                sys.exit(2)
         elif o in ("-b", "--block"):
             blockSpecified = True
             block = int(a)
@@ -441,6 +437,7 @@ def main():
             print("number of blocks: ", nBlocks)
         elif o in ("-f", "--flash"):
             flash = True
+            flashFile = a
         elif o in ("-e", "--erase"):
             erase = True
         elif o in ("-c", "--checkempty"):
@@ -449,9 +446,10 @@ def main():
             assert False, "unhandled option"
     
     if flash or erase or verify or checkEmpty:
-        if file == None and not (erase or checkEmpty):
-            print("No file supplied")
-            sys.exit(2)
+        for f in (flashFile, verifyFile):
+            if f is not None and not path.isfile(f):
+                print("missing input file: ", f)
+                sys.exit(2)
 
         foo = Programmer()
         foo.SerialInit(port)
@@ -478,13 +476,13 @@ def main():
                         return
             if flash:
                 print("\nFlashing chip...\n")
-                if not foo.Program(block, file):
+                if not foo.Program(block, flashFile):
                     ok = False
                     return
 
             if verify:
                 print("\nVerifying chip...\n")
-                if not foo.VerifyBlock(block, file):
+                if not foo.VerifyBlock(block, verifyFile):
                     ok = False
                     return
 
