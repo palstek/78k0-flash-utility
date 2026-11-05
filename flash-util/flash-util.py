@@ -40,6 +40,8 @@ StatusList = {
 
 
 BLOCK_SIZE = 1024
+FRAME_SIZE = 256                 # max. payload of one data frame
+DATA_TIMEOUT = 5                 # seconds to wait for the status of a data frame
 
 
 def LoadImage(file):
@@ -249,26 +251,62 @@ class Programmer(object):
             print("error: Did not receive ACK, returning...")
             return False
 
-        b = bytearray()
-
-        b.append(0x02)   # Start byte
-        b.append(0x00)   # Length (00h = 256 bytes)
-        b.extend(data)
-
-            
-        b.append(add_crc(b, 256)) # crc
-        b.append(0x03) # stop byte
-
-        print("Sending data..")
-        #print(b)
-        self.ser.write(b)
-
-        status = self.Receive()
-        if status != 0x06:
+        if not self.SendData(start_address, data, internalVerify=True):
             print("error: Programming failed!")
             return False
-        print("Programming succeeded!")    
+        print("Programming succeeded!")
         return True
+
+    def SendData(self, start_address, data, internalVerify=False):
+        # Send data as frames of up to 256 bytes:
+        #   STX, LEN (00h = 256), DATA, SUM, ETB (more frames follow) / ETX (last)
+        # Each frame is answered with a status frame ST1 (reception), ST2
+        # (write/verify result). For verify, the uPD78F0534 reports a mismatch
+        # only in the status of the last frame (tested), so a verify error
+        # applies to the whole range. After the last programming frame the
+        # chip sends one more status frame with the internal verify result.
+        nFrames = (len(data) + FRAME_SIZE - 1) // FRAME_SIZE
+        oldTimeout = self.ser.timeout
+        self.ser.timeout = DATA_TIMEOUT
+        try:
+            for i in range(nFrames):
+                chunk = data[i * FRAME_SIZE:(i + 1) * FRAME_SIZE]
+                last = (i == nFrames - 1)
+                b = bytearray([0x02, len(chunk) & 0xFF])
+                b.extend(chunk)
+                b.append(add_crc(b, len(chunk)))
+                b.append(0x03 if last else 0x17)
+                addr = start_address + i * FRAME_SIZE
+                print("Sending data frame %d/%d (0x%05X)..." % (i + 1, nFrames, addr))
+                self.ser.write(b)
+                self.ser.flush()
+
+                st = self.ReceiveFrame()
+                if st is None:
+                    print("error: No valid status for frame at 0x%05X" % addr)
+                    return False
+                if st[0] != 0x06:
+                    print("error: Frame at 0x%05X not accepted: %s" % (addr, StatusText(st[0])))
+                    return False
+                if len(st) > 1 and st[1] != 0x06:
+                    if last:
+                        print("error: %s in range 0x%05X-0x%05X" % (StatusText(st[1]), start_address, start_address + len(data) - 1))
+                    else:
+                        print("error: Frame at 0x%05X failed: %s" % (addr, StatusText(st[1])))
+                    return False
+
+            if internalVerify:
+                print("Waiting for internal verify...")
+                st = self.ReceiveFrame()
+                if st is None:
+                    print("error: No internal verify status received (data may still be written, check with -v)")
+                    return False
+                if st[0] != 0x06:
+                    print("error: Internal verify failed: %s" % StatusText(st[0]))
+                    return False
+            return True
+        finally:
+            self.ser.timeout = oldTimeout
 
     def BlockErase(self, block):
         start_address = block * 1024
@@ -349,25 +387,10 @@ class Programmer(object):
             print("error: Did not receive ACK, returning...")
             return False
 
-        b = bytearray()
-
-        b.append(0x02)   # Start byte
-        b.append(0x00)   # Length (00h = 256 bytes)
-        b.extend(data)
-
-            
-        b.append(add_crc(b, 256)) # crc
-        b.append(0x03) # stop byte
-
-        print("Sending data..")
-        #print(b)
-        self.ser.write(b)
-
-        status = self.Receive()
-        if status != 0x06:
-            print("error: Verification failed! (mismatch?)")
+        if not self.SendData(start_address, data):
+            print("error: Verification failed!")
             return False
-        print("Verification OK!")    
+        print("Verification OK!")
         return True
 
 
