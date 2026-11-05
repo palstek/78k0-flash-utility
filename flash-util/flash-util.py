@@ -127,6 +127,18 @@ class Programmer(object):
         print("Response: ", StatusList.get(b[2], "Unknown status 0x%02X (raw: %s)" % (b[2], b.hex())))
 
         return b[2]
+
+    def ExitFlashMode(self):
+        # Leave flash programming mode: FLMD0 low, then pulse RESET so the
+        # chip restarts into the normal application.
+        print("Leaving flash mode (FLMD0 low, RESET pulse)...")
+        self.ser.rts = True   # FLMD0 low
+        time.sleep(0.01)
+        self.ser.dtr = True   # RESET low
+        time.sleep(0.1)
+        self.ser.dtr = False  # RESET released with FLMD0 low -> application
+        time.sleep(0.01)
+        return
     
     def Reset(self):
         b = bytearray()
@@ -138,10 +150,8 @@ class Programmer(object):
         b.append(0x03)      # Stop byte
 
         self.ser.write(b)
-        self.Receive()
+        return self.Receive()
 
-        return
-    
     def BlankCheckBlock(self, block):
 
         start_address = block * 1024
@@ -403,49 +413,59 @@ def main():
 
         foo = Programmer()
         foo.SerialInit(port)
-        time.sleep(500/1000) # 500 ms sleep
-        foo.Reset()
-        time.sleep(500/1000) # 500 ms sleep
+        ok = True
+        crashed = False
+        try:
+            time.sleep(500/1000) # 500 ms sleep
+            if foo.Reset() != 0x06:
+                print("error: No ACK from bootloader, aborting.")
+                ok = False
+                return
+            time.sleep(500/1000) # 500 ms sleep
 
-        if erase:
-            if not blockSpecified:
-                print("\nErasing chip...\n")
-                if not foo.ChipErase():
-                    foo.ser.close()
-                    sys.exit(2)
-            else:
-                print("\nErasing block", block, "...\n")
-                if not foo.BlockErase(block):
-                    foo.ser.close()
-                    sys.exit(2) 
-        if flash:
-            print("\nFlashing chip...\n")
-            if not foo.Program(block, file):
-                foo.ser.close()
-                sys.exit(2)
+            if erase:
+                if not blockSpecified:
+                    print("\nErasing chip...\n")
+                    if not foo.ChipErase():
+                        ok = False
+                        return
+                else:
+                    print("\nErasing block", block, "...\n")
+                    if not foo.BlockErase(block):
+                        ok = False
+                        return
+            if flash:
+                print("\nFlashing chip...\n")
+                if not foo.Program(block, file):
+                    ok = False
+                    return
 
-        if verify:
-            print("\nVerifying chip...\n")
-            if not foo.VerifyBlock(block, file):
-                foo.ser.close()
-                sys.exit(2)
+            if verify:
+                print("\nVerifying chip...\n")
+                if not foo.VerifyBlock(block, file):
+                    ok = False
+                    return
 
-        if checkEmpty:
-            print("\nGetting empty blocks...\n")
-            blockStates = []
-            for x in range(nBlocks):
-                if not foo.BlankCheckBlock(x):
-                    blockStates.append("not empty")
-                else: 
-                    blockStates.append("empty")
-            
-            for x in range(nBlocks):
-                print("Block", x, blockStates[x])
+            if checkEmpty:
+                print("\nGetting empty blocks...\n")
+                blockStates = []
+                for x in range(nBlocks):
+                    if not foo.BlankCheckBlock(x):
+                        blockStates.append("not empty")
+                    else:
+                        blockStates.append("empty")
 
+                for x in range(nBlocks):
+                    print("Block", x, blockStates[x])
+        except BaseException:
+            crashed = True
+            raise
+        finally:
+            # Always leave the chip running its application again
+            foo.ExitFlashMode()
             foo.ser.close()
-            
-
-        foo.ser.close()
+            if not ok and not crashed:
+                sys.exit(2)
 
     
     
