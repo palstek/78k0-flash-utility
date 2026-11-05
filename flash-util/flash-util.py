@@ -10,8 +10,6 @@ from os import path
 import binascii
 
 
-# Currently only single block programming possible. Use Renesas Flash Programmer V2 to flash multiple blocks.
-
 # Number of 1 KB flash blocks (default: uPD78F0534 with 48 KB flash).
 # Can be changed with -n/--blocks, e.g. 32 for uPD78F0513.
 DEFAULT_N_BLOCKS = 48
@@ -39,6 +37,19 @@ StatusList = {
     0x20: "Read error",
     0xFF: "Processing in progress (BUSY)",
 }
+
+
+BLOCK_SIZE = 1024
+
+
+def LoadImage(file):
+    # Read a binary image and pad it with 0xFF to a multiple of the block
+    # size (0xFF = erased flash, so padding does not change anything).
+    with open(file, 'rb') as f:
+        data = f.read()
+    if len(data) % BLOCK_SIZE:
+        data += b'\xff' * (BLOCK_SIZE - len(data) % BLOCK_SIZE)
+    return data
 
 
 def StatusText(status):
@@ -209,18 +220,10 @@ class Programmer(object):
         print("Block", block, result)
         return result
     
-    def Program(self, startBlock, file):
-        endBlock = startBlock
-        if startBlock == 0:
-            startBlock = 0
-            endBlock = nBlocks - 1 
-        self.ProgramBlock(startBlock, endBlock, file)
-
-        return
-    
-    def ProgramBlock(self, startBlock, endBlock, file):
-        start_address = startBlock * 1024
-        end_address = ((endBlock + 1) * 1024) -1
+    def ProgramBlock(self, startBlock, data):
+        # Program data (multiple of BLOCK_SIZE) starting at startBlock
+        start_address = startBlock * BLOCK_SIZE
+        end_address = start_address + len(data) - 1
         b = bytearray()
 
         b.append(0x01)   # Start byte
@@ -238,7 +241,7 @@ class Programmer(object):
         b.append(0x03) # stop byte
 
         #print(b.hex())
-        print("Sending programming command...")
+        print("Sending programming command (0x%05X-0x%05X)..." % (start_address, end_address))
         self.ser.write(b)
 
         status = self.Receive()
@@ -250,11 +253,7 @@ class Programmer(object):
 
         b.append(0x02)   # Start byte
         b.append(0x00)   # Length (00h = 256 bytes)
-
-        with open(file, 'rb') as f:
-            # read file as hex.
-            hexdata = f.read().hex()
-        b.extend(bytearray.fromhex(hexdata))
+        b.extend(data)
 
             
         b.append(add_crc(b, 256)) # crc
@@ -321,14 +320,10 @@ class Programmer(object):
         print("Chip erased.") 
         return True
     
-    def Verify(self, block, file):
-        if block == None:
-            block = 1
-        return self.VerifyBlock(block,file)
-
-    def VerifyBlock(self, block, file):
-        start_address = block * 1024
-        end_address = ((block + 1) * 1024) -1
+    def VerifyBlock(self, startBlock, data):
+        # Verify data (multiple of BLOCK_SIZE) starting at startBlock
+        start_address = startBlock * BLOCK_SIZE
+        end_address = start_address + len(data) - 1
         b = bytearray()
 
         b.append(0x01)   # Start byte
@@ -346,7 +341,7 @@ class Programmer(object):
         b.append(0x03) # stop byte
 
         #print(b.hex())
-        print("Sending verify command..")
+        print("Sending verify command (0x%05X-0x%05X).." % (start_address, end_address))
         self.ser.write(b)
 
         status = self.Receive()
@@ -358,11 +353,7 @@ class Programmer(object):
 
         b.append(0x02)   # Start byte
         b.append(0x00)   # Length (00h = 256 bytes)
-
-        with open(file, 'rb') as f:
-            # read file as hex.
-            hexdata = f.read().hex()
-        b.extend(bytearray.fromhex(hexdata))
+        b.extend(data)
 
             
         b.append(add_crc(b, 256)) # crc
@@ -383,10 +374,10 @@ class Programmer(object):
 def usage():
     print("usage: -h, --help                    Print this help")
     print("       -p, --port        <port>      Specify serial port")
-    print("       -b, --block       <block>     Specify specified block")
-    print("       -f, --flash       <file>      Specify file to flash")
-    print("       -e, --erase                   Erase chip/block")
-    print("       -v, --verify      <file>      Specify file to verify")
+    print("       -b, --block       <block>     Block to erase, or start block for flash/verify")
+    print("       -f, --flash       <file>      Flash binary file (requires -b, length = file size)")
+    print("       -e, --erase                   Erase chip, or only the block given with -b")
+    print("       -v, --verify      <file>      Verify binary file (requires -b, length = file size)")
     print("       -c, --checkempty              Check if chip/block is empty")
     print("       -n, --blocks      <count>     Number of 1 KB flash blocks (default: %d)" % DEFAULT_N_BLOCKS)
     return
@@ -422,7 +413,11 @@ def main():
             print("setting port to: ", port)
         elif o in ("-b", "--block"):
             blockSpecified = True
-            block = int(a)
+            try:
+                block = int(a)
+            except ValueError:
+                print("invalid block: ", a)
+                sys.exit(2)
             print("specified block: ", block)
         elif o in ("-n", "--blocks"):
             try:
@@ -446,9 +441,27 @@ def main():
             assert False, "unhandled option"
     
     if flash or erase or verify or checkEmpty:
+        if blockSpecified and not 0 <= block < nBlocks:
+            print("block %d out of range (0..%d)" % (block, nBlocks - 1))
+            sys.exit(2)
+        if (flash or verify) and not blockSpecified:
+            print("flash/verify require the start block (-b)")
+            sys.exit(2)
+
+        images = {}
         for f in (flashFile, verifyFile):
-            if f is not None and not path.isfile(f):
+            if f is None:
+                continue
+            if not path.isfile(f):
                 print("missing input file: ", f)
+                sys.exit(2)
+            images[f] = LoadImage(f)
+            count = len(images[f]) // BLOCK_SIZE
+            if count == 0:
+                print("input file is empty: ", f)
+                sys.exit(2)
+            if block + count > nBlocks:
+                print("%s needs blocks %d..%d, but flash has only %d blocks" % (f, block, block + count - 1, nBlocks))
                 sys.exit(2)
 
         foo = Programmer()
@@ -476,13 +489,13 @@ def main():
                         return
             if flash:
                 print("\nFlashing chip...\n")
-                if not foo.Program(block, flashFile):
+                if not foo.ProgramBlock(block, images[flashFile]):
                     ok = False
                     return
 
             if verify:
                 print("\nVerifying chip...\n")
-                if not foo.VerifyBlock(block, verifyFile):
+                if not foo.VerifyBlock(block, images[verifyFile]):
                     ok = False
                     return
 
