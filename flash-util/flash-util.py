@@ -16,9 +16,9 @@ import binascii
 nBlocks = 32
 
 # Flash mode entry timing (seconds)
-RESET_HOLD_TIME = 0.5            # RESET + FLMD0 low before releasing RESET
+RESET_HOLD_TIME = 0.5            # RESET low (FLMD0 already high) before releasing RESET
 T_RFCF = 0.002                   # RESET high -> first FLMD0 pulse (1..10 ms)
-FLMD0_PULSES = 3                 # 3 pulses = UART (TxD/RxD) communication mode
+FLMD0_PULSES = 3                 # 3 pulses = UART6 (TxD6/RxD6), verified on uPD78F0534; FLMD0 must be high at RESET release
 FLMD0_PULSE_WIDTH = 0.000150     # pulse high/low width (10..500 us)
 FLASH_MODE_SETTLE_TIME = 0.4     # FLMD0 high -> first 00h sync byte
 
@@ -87,12 +87,14 @@ class Programmer(object):
         #   rts = False -> FLMD0 = VDD
         print("Entering flash programming mode (FLMD0 pulses)...")
 
-        # Step 1: initial state, RESET and FLMD0 low
+        # Step 1: RESET low, FLMD0 high. FLMD0 is sampled when RESET is
+        # released: 0V -> normal operation (application), VDD -> flash
+        # programming mode. So FLMD0 must already be high here.
         self.ser.dtr = True
-        self.ser.rts = True
+        self.ser.rts = False
         time.sleep(RESET_HOLD_TIME)
 
-        # Step 2: release RESET, chip starts
+        # Step 2: release RESET with FLMD0 high -> flash programming mode
         self.ser.dtr = False
 
         # Step 3: wait tRFCF (1..10 ms), then send FLMD0 pulses
