@@ -194,12 +194,20 @@ class Programmer(object):
         b.append(0x03) # stop byte
         self.ser.write(b)
 
+        # Returns "empty", "not empty" or "error (<status>)"
         status = self.Receive()
-        if status != 0x06:
+        if status == 0x06:
+            print("Block empty")
+            return "empty"
+        if status == 0x1B:  # MRG11 error = block is not blank
             print("Block not empty")
-            return False
-        print("Block empty")    
-        return True
+            return "not empty"
+        if status is None:
+            result = "error (no valid response)"
+        else:
+            result = "error (%s)" % StatusText(status)
+        print("Block", block, result)
+        return result
     
     def Program(self, startBlock, file):
         endBlock = startBlock
@@ -484,13 +492,15 @@ def main():
                 print("\nGetting empty blocks...\n")
                 blockStates = []
                 for x in range(nBlocks):
-                    if not foo.BlankCheckBlock(x):
-                        blockStates.append("not empty")
-                    else:
-                        blockStates.append("empty")
+                    blockStates.append(foo.BlankCheckBlock(x))
 
                 for x in range(nBlocks):
                     print("Block", x, blockStates[x])
+
+                if any(s.startswith("error") for s in blockStates):
+                    print("error: Blank check failed for some blocks.")
+                    ok = False
+                    return
         except BaseException:
             crashed = True
             raise
