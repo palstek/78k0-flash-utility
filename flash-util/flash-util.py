@@ -12,8 +12,10 @@ import binascii
 
 # Currently only single block programming possible. Use Renesas Flash Programmer V2 to flash multiple blocks.
 
-# Number of blocks in PD78F0513
-nBlocks = 32
+# Number of 1 KB flash blocks (default: uPD78F0534 with 48 KB flash).
+# Can be changed with -n/--blocks, e.g. 32 for uPD78F0513.
+DEFAULT_N_BLOCKS = 48
+nBlocks = DEFAULT_N_BLOCKS
 
 # Flash mode entry timing (seconds)
 RESET_HOLD_TIME = 0.5            # RESET low (FLMD0 already high) before releasing RESET
@@ -359,11 +361,13 @@ def usage():
     print("       -e, --erase                   Erase chip/block")
     print("       -v, --verify      <file>      Specify file to verify")
     print("       -c, --checkempty              Check if chip/block is empty")
+    print("       -n, --blocks      <count>     Number of 1 KB flash blocks (default: %d)" % DEFAULT_N_BLOCKS)
     return
 
 def main():
+    global nBlocks
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "hp:fecb:vi:", ["help", "port=", "flash", "erase", "checkempty", "block=", "verify", "input="])
+        opts, args = getopt.getopt(sys.argv[1:], "hp:fecb:vi:n:", ["help", "port=", "flash", "erase", "checkempty", "block=", "verify", "input=", "blocks="])
     except getopt.GetoptError as err:
         # print help information and exit:
         print(err)  # will print something like "option -a not recognized"
@@ -397,6 +401,17 @@ def main():
             blockSpecified = True
             block = int(a)
             print("specified block: ", block)
+        elif o in ("-n", "--blocks"):
+            try:
+                count = int(a)
+            except ValueError:
+                count = 0
+            if count <= 0:
+                print("invalid block count: ", a)
+                usage()
+                sys.exit(2)
+            nBlocks = count
+            print("number of blocks: ", nBlocks)
         elif o in ("-f", "--flash"):
             flash = True
         elif o in ("-e", "--erase"):
